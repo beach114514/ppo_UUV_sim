@@ -105,11 +105,6 @@ class PPOContinuous:
             action_normalized = torch.clamp(action_normalized, -1.0, 1.0)
 
         action_norm_np = action_normalized.cpu().numpy()
-
-        # 【关键修改】
-        # 因为 UUV_Env.step() 里面已经写了: motor = (action + 1)/2 * MAX
-        # 所以这里传给环境的 action_physical 直接就是 normalized 的值即可！
-        # 不要在这里乘 70 或者 0.52，否则会重复缩放导致数值爆炸。
         action_physical = action_norm_np
 
         return action_norm_np, action_physical
@@ -246,10 +241,6 @@ if __name__ == '__main__':
     from tqdm import tqdm
     from gymnasium.vector import AsyncVectorEnv
 
-
-    # 假设你这些类都在同一个文件或已导入
-    # from your_module import UUV_MultiGoal_Env, PPOContinuous, PPOBuffer, get_log_prob_batch
-
     # 辅助函数: 移动平均
     def moving_average(a, window_size):
         if len(a) < window_size: return np.array(a)
@@ -265,8 +256,6 @@ if __name__ == '__main__':
     MAX_STEPS = 4000
     NUM_ENVS = 16  # 【新增】必须定义并行环境数量
 
-    # 【修改】不再需要固定的 GOAL_POSITIONS 和 OBSTACLES
-    # 定义地图生成配置
     MAP_CONFIG = {
         'map_size': 700.0,
         'n_obs': 8,  # 障碍物数量
@@ -277,7 +266,6 @@ if __name__ == '__main__':
 
     TOTAL_EPISODES = 10000  # 这个参数其实不控制循环，控制循环的是 TOTAL_ROUNDS
 
-    # 【修改】每 80 个回合打印一次日志
     EPISODES_PER_LOG = 80
 
     # 总共跑多少轮日志
@@ -285,7 +273,6 @@ if __name__ == '__main__':
 
     STEPS_PER_UPDATE = 16384
 
-    # 【核心配置】奖励缩放
     REWARD_SCALE = 400.0  # 确认使用这个参数
 
     ACTOR_LR = 3e-5  #
@@ -438,10 +425,6 @@ if __name__ == '__main__':
                                 if final_info is not None and final_info.get('is_goal_achieved', False):
                                     is_success = True
 
-                            # 你的 env 逻辑是：到达最后一个点，terminated=True, is_goal_achieved=True
-                            # 所以只要 terminated 且 is_goal_achieved 就代表通关
-                            # 但 vector env 中 terminations[idx] 是当前的 termination
-
                             # 简单判断：如果这是 termination 且 info 里说 goal reached
                             if is_success:
                                 log_goals += 1
@@ -494,4 +477,5 @@ if __name__ == '__main__':
     plt.grid(True, alpha=0.3)
     plt.savefig(os.path.join(MODEL_DIR, 'training_curve.png'))
     plt.show()
+
     print("Done.")
