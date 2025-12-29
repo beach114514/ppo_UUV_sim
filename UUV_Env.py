@@ -66,11 +66,10 @@ def custom_multi_goal_reward(env, old_eta, new_eta, nu, action, last_action,
     # A. 斥力计算 (Max 逻辑 - 最终修正版)
     # ====================================================
 
-    # 1. 初始化变量 (必须在遍历障碍物之前！)
+    # 1. 初始化变量
     max_threat_force = 0.0  # 记录这一刻面临的最大单一威胁
     total_speed_penalty = 0.0  # 超速惩罚累加
 
-    # 2. 【修正】只保留这一个循环，删除外层的冗余循环
     for obs in env.obstacles:
         center = obs['center']
         r = obs['radius']
@@ -180,12 +179,6 @@ def custom_multi_goal_reward(env, old_eta, new_eta, nu, action, last_action,
 # ====================================================
 # III. 地图生成器
 # ====================================================
-# === 修改前：使用全局 np.random ===
-# def generate_valid_map(...):
-#     ...
-#     r = np.random.uniform(...)
-
-# === 修改后：使用指定 seed ===
 def generate_valid_map(
         map_size=400.0,
         n_obstacles=4,
@@ -231,8 +224,6 @@ def generate_valid_map(
         path_points.append(pos)
 
     # --- 2. 在路径上针对性生成障碍物 (Obstacles on Path) ---
-    # 我们要在每一段路径 (Start->G1, G1->G2...) 上尝试放置障碍物
-
     # 定义冲突检测函数
     def is_conflict(pos, radius, existing_obstacles, check_start=True):
         # 检查是否盖住了起点
@@ -252,12 +243,10 @@ def generate_valid_map(
         return False
 
     attempts = 0
-    # 我们尝试生成的总次数稍微多一点，确保能填满
     while len(obstacles) < n_obstacles and attempts < 2000:
         attempts += 1
 
         # A. 随机选一段路径 (例如 Start->Goal1 或 Goal1->Goal2)
-        # 既然我们想增加难度，优先选第1段 (Start->Goal1) 也是可以的，这里随机选一段
         segment_idx = rng.randint(0, len(path_points) - 1)
         p_start = path_points[segment_idx]
         p_end = path_points[segment_idx + 1]
@@ -271,8 +260,6 @@ def generate_valid_map(
         base_pos = p_start + t * vec_path
 
         # C. 增加垂直扰动 (Jitter)
-        # 如果障碍物严丝合缝地在直线上，也是一种特定的难，加一点左右偏移更自然
-        # 计算垂直向量 (-y, x)
         vec_perp = np.array([-vec_path[1], vec_path[0]])
         # 归一化
         norm = np.linalg.norm(vec_perp)
@@ -280,7 +267,6 @@ def generate_valid_map(
             vec_perp /= norm
 
         # 偏移量：在路径左右摇摆 (-50m 到 50m)
-        # 这个范围决定了障碍物是“正挡”还是“侧挡”
         jitter = rng.uniform(-50.0, 50.0)
         pos = base_pos + jitter * vec_perp
 
@@ -291,8 +277,6 @@ def generate_valid_map(
         if not is_conflict(pos, r, obstacles, check_start=True):
             obstacles.append({'center': pos, 'radius': r})
 
-    # 如果针对性生成没填满 (比如因为太挤了)，剩下的还是全图随机补齐
-    # 防止因为路径太短放不下障碍物而导致障碍物数量不足
     fallback_attempts = 0
     while len(obstacles) < n_obstacles and fallback_attempts < 1000:
         fallback_attempts += 1
@@ -341,7 +325,6 @@ class UUV_MultiGoal_Env(gym.Env):
         self.render_mode = render_mode
 
         # --- 初始固定目标与障碍物处理 ---
-        # 如果外部传了固定地图，先存入缓存，作为第0局的地图
         self.all_goals = []
         if goal_positions is not None:
             self.all_goals = [np.array(g, dtype=np.float32) for g in goal_positions]
@@ -476,11 +459,9 @@ class UUV_MultiGoal_Env(gym.Env):
 
             # === 计算种子 ===
             if fixed_seed is not None:
-                # 【情况 A】用户指定了种子，强制使用
                 shared_seed = fixed_seed
                 # print(f"[Map Gen] Using FIXED Seed: {shared_seed}")
             else:
-                # 【情况 B】用户没指定，按周期自动计算
                 map_cycle_id = self.global_episode_count // freq
                 shared_seed = map_cycle_id + 13579
                 # print(f"[Map Gen] Sync Map ID: {map_cycle_id} (Seed: {shared_seed})")
@@ -494,7 +475,6 @@ class UUV_MultiGoal_Env(gym.Env):
                 seed=shared_seed
             )
 
-        # 这里的 copy 很关键，防止多个环境引用同一个内存对象导致篡改
         import copy
         self.obstacles = copy.deepcopy(self.cached_obstacles)
         self.all_goals = copy.deepcopy(self.cached_goals)
@@ -545,14 +525,9 @@ class UUV_MultiGoal_Env(gym.Env):
 
         reward = self.reward_fn(self, old_eta, self.current_eta, nu, action, self.last_action,
                                 is_goal_achieved, terminated, truncated)
-        # === 【核心修改】 ===
-        # 1. 获取基础 info
         info = self._get_info()
-        # 2. 强制把 is_goal_achieved 塞进去！
-        # 这样 VectorEnv 才能在回合结束时通过 final_info 捕获到它
         info['is_goal_achieved'] = is_goal_achieved
 
-        # 如果是 terminated (撞墙或通关)，加个标记方便调试（可选）
         if terminated:
             info['is_success'] = is_goal_achieved  # 只有通关时由 check 函数置为 True
 
@@ -634,8 +609,6 @@ if __name__ == '__main__':
     ]
 
     # 3. 【配置地图参数】
-    # 为了保证我们定义的地图不被自动生成的随机地图覆盖，
-    # 我们把 'map_refresh_freq' 设为一个极大的数。
     test_map_config = {
         'map_size': 500.0,
         'n_obs': 0,  # 自动生成数量设为0（不影响手动传入的）
@@ -660,31 +633,21 @@ if __name__ == '__main__':
 
     try:
         for i in range(10000):
-            # --- 一个简单的 PID 策略 (仅用于演示跑通地图) ---
-
-            # obs[4] 是 angle_error (归一化过的)
-            # obs[3] 是 dist_to_goal (归一化过的)
             angle_error = obs[4]
             dist_to_goal = obs[3]
 
-            # 简单的 P 控制器控制舵角
             rudder_cmd = np.clip(angle_error * 8.0, -1.0, 1.0)
 
-            # 简单的逻辑控制油门：离得远就快跑，离得近就减速
             motor_cmd = 0.8 if dist_to_goal > 0.05 else 0.4
 
             action = np.array([motor_cmd, rudder_cmd], dtype=np.float32)
 
-            # 执行动作
             obs, r, term, trunc, info = env.step(action)
 
-            # 打印调试信息
             if i % 20 == 0:
                 print(f"Step {i}: Reward={r:.2f}, Goal_Idx={info['current_goal_idx']}")
                 print(env.current_eta)
 
-            # 如果通关或超时，重置环境
-            # 因为我们在 map_config 里锁定了刷新频率，reset 后还会是同一张地图
             if term or trunc:
                 status = "Success" if info.get('is_goal_achieved', False) else "Fail"
                 print(f"Episode Finished. Result: {status}")
@@ -694,4 +657,5 @@ if __name__ == '__main__':
         print("测试手动中断")
     finally:
         env.close()
+
         print("环境已关闭")
